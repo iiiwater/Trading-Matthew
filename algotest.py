@@ -243,42 +243,6 @@ class ConsecDayTrading:
     def initial_last_holding(self):
         self.last_holding = pd.read_sql_query("select * from stocks where asset_id=(select max(id) from assets);",self.conn)
         self.initial_asset_value=pd.read_sql_query("select initial_asset_value from assets where id=(select max(id) from assets);",self.conn)['initial_asset_value'].values[0]
-    
-    
-    def get_transactions(self):
-        transactions=0
-        difference=0
-        for i in range(5):
-            for j in range(5):
-                if self.last_holding['Stock_name'].values[i]!=self.my_df['stock_name'].values[j]:
-                    difference+=1
-                if self.last_holding['Stock_name'].values[i]==self.my_df['stock_name'].values[j]and self.last_holding['shares'].values[i]!=self.my_df['shares']:
-                    transactions+=1
-            if difference==5:
-                transactions+=2
-            difference=0
-        self.transactions=transactions
-     
-    def get_performance_indicators(self):
-
-        minimum_asset=pd.read_sql_query("select min(asset_value) as asset_value from assets where id>(select max(id) from assets where if_is_initial='YES' ); ",self.conn).values[0]
-        self.maximum_drawdown_number=minimum_asset-self.initial_asset_value
-        self.maximum_drawdown_percent=(minimum_asset-self.initial_asset_value)/self.initial_asset_value
-    def get_sharp_ratio(self):
-        
-        avg_return=pd.read_sql_query("select avg(absolute_return) as average_return from (select * from assets order by id DESC limit 30) ;",self.conn).values[0]
-        variance_return=np.std(pd.sql_query("select absolute_return from assets order by id DESC limit 30;", self.conn ).values)
-        self.sharp_ratio=avg_return/variance_return
-        variance_negative_return=np.std(pd.read_sql_query("select absolute_return from assets where absolute_return<0 ;",self.conn).values)
-        self.sortino_ratio=avg_return/variance_negative_return
-        print("Sharp ratio is: %s" % self.sharp_ratio)
-        print("Sortino_ratio is: %s" % self.sortino_ratio)
-
-    def get_return(self):
-        self.current_asset=sum(self.my_df['price'][:5]*self.my_df['shares'][:5])
-        self.absolute_return=self.current_asset-self.initial_asset_value
-        self.ROI=self.absolute_return/self.initial_asset_value
-            
         
     def get_current_av(self):
         self.last_holding_names = [i for i in self.last_holding['Stock_name']]
@@ -317,7 +281,105 @@ class ConsecDayTrading:
 
         self.my_df = pd.DataFrame(return_list,columns=['stock_name','price','monthly_growth','shares'])
         self.my_df.to_csv('current_holding.csv', index=False, header=False)
+            
 
+    def get_current_liq_portfolio(self):
+        stock_sym = self.stock_liq_mat.columns
+        startdate = self.current_date.strftime("%Y-%m-%d")
+        earlier_date = self.days_ago(28, self.current_date).strftime("%Y-%m-%d")
+        sub_mat = self.stock_liq_mat.loc[earlier_date:startdate].values
+        mon_grow = (sub_mat[-1,:] - sub_mat[0,:]) / sub_mat[0,:]
+        rank = np.argsort(-mon_grow)
+        return_list = []
+        for i in range(5):
+            col = rank[i]
+            price = sub_mat[-1,col]
+            return_list.append([stock_sym[col], price, mon_grow[col], self.current_av/5/price])
+        self.current_port = return_list
+
+        my_df = pd.DataFrame(return_list)
+        my_df.to_csv('current_holding.csv', index=False, header=False)
+
+class performance:
+    def __init__(self,stocks,current_portfolio):
+        self.conn=sqlite3.connect("pythonsqlite.db")
+        self.c=self.conn.cursor()
+        self.stocks = stocks
+        self.stock_mat = self.stocks.stock_mat
+        self.stocks_liq = None
+        self.stocks_liq_mat = None
+        self.last_holding = pd.read_sql_query("select * from stocks where asset_id=(select max(id) from assets);",self.conn)
+        self.initial_asset_value=pd.read_sql_query("select initial_asset_value from assets where id=(select max(id) from assets);",self.conn)['initial_asset_value'].values[0]
+        self.my_df=current_portfolio
+        self.transactions=self.get_transactions()
+        self.maximum_drawdown_number,self.maximum_drawdown_percent=self.get_performance_indicators() 
+        self.sharp_ratio,self.sortino_ratio=self.get_sharp_ratio()
+
+     
+    def get_performance_indicators(self):
+
+        minimum_asset=pd.read_sql_query("select min(asset_value) as asset_value from assets; ",self.conn).values[0]
+        maximum_drawdown_number=minimum_asset-self.initial_asset_value
+        maximum_drawdown_percent=(minimum_asset-self.initial_asset_value)/self.initial_asset_value
+        return (maximum_drawdown_number,maximum_drawdown_percent)
+    
+    def get_transactions(self):
+        transactions=0
+        difference=0
+        for i in range(5):
+            for j in range(5):
+                if self.last_holding['Stock_name'].values[i]!=self.my_df['stock_name'].values[j]:
+                    difference+=1
+                if self.last_holding['Stock_name'].values[i]==self.my_df['stock_name'].values[j]and self.last_holding['shares'].values[i]!=self.my_df['shares']:
+                    transactions+=1
+            if difference==5:
+                transactions+=2
+            difference=0
+        return transactions
+    
+    def get_sharp_ratio(self):
+        
+        avg_return=pd.read_sql_query("select avg(absolute_return) as average_return from (select * from assets order by id DESC limit 30) ;",self.conn).values[0]
+        variance_return=np.std(pd.read_sql_query("select absolute_return from assets order by id DESC limit 30;", self.conn ).values)
+        if variance_return==0:
+            sharp_ratio=0
+        else:
+            sharp_ratio=avg_return/variance_return
+        counts_negative_return=pd.read_sql_query("select count(*) as number from assets where absolute_return<0 ;",conn).values
+        
+        if counts_negative_return==0:
+            sortino_ratio=0
+        else:
+            variance_negative_return=np.std(pd.read_sql_query("select count(*) from assets where absolute_return<0 ;",self.conn).values)
+            sortino_ratio=avg_return/variance_negative_return        
+        return (sharp_ratio,sortino_ratio)
+
+    def get_return(self):
+        self.current_asset=sum(self.my_df['price'][:5]*self.my_df['shares'][:5])
+        self.absolute_return=self.current_asset-self.initial_asset_value
+        self.ROI=self.absolute_return/self.initial_asset_value
+
+class database:
+    def __init__(self,current_portfolio,transactions,absolute_return,ROI):
+        self.conn=sqlite3.connect("pythonsqlite.db")
+        self.c=self.conn.cursor()
+        self.my_df=current_portfolio
+        self.current_date=datetime.date(2017,10,19)
+        self.last_holding = pd.read_sql_query("select * from stocks where asset_id=(select max(id) from assets);",self.conn)
+        self.initial_asset_value=pd.read_sql_query("select initial_asset_value from assets where id=(select max(id) from assets);",self.conn)['initial_asset_value'].values[0] 
+        self.transactions=transactions
+        self.absolute_return=absolute_return
+        self.ROI=ROI
+        
+               
+    def days_ago(self, d, startdate=None):
+        #today is August 13, 10 days ago means August 3
+        if startdate==None:
+            date = datetime.datetime.today() - datetime.timedelta(days=d)
+        else:
+            date = startdate - datetime.timedelta(days=d)
+        return date.strftime("%Y-%m-%d")
+        
     def create_table(self,create_table_Sql):
         try:
             self.c = self.conn.cursor()
@@ -356,24 +418,7 @@ class ConsecDayTrading:
             # stocks
             for i in range(5):
                 self.create_stock_select((self.my_df['stock_name'][i],self.my_df['price'][i],assets_id,self.my_df['shares'][i],self.days_ago(28, self.current_date),self.current_date))
-            
-
-    def get_current_liq_portfolio(self):
-        stock_sym = self.stock_liq_mat.columns
-        startdate = self.current_date.strftime("%Y-%m-%d")
-        earlier_date = self.days_ago(28, self.current_date).strftime("%Y-%m-%d")
-        sub_mat = self.stock_liq_mat.loc[earlier_date:startdate].values
-        mon_grow = (sub_mat[-1,:] - sub_mat[0,:]) / sub_mat[0,:]
-        rank = np.argsort(-mon_grow)
-        return_list = []
-        for i in range(5):
-            col = rank[i]
-            price = sub_mat[-1,col]
-            return_list.append([stock_sym[col], price, mon_grow[col], self.current_av/5/price])
-        self.current_port = return_list
-
-        my_df = pd.DataFrame(return_list)
-        my_df.to_csv('current_holding.csv', index=False, header=False)
+    
 
 class FirstdaySMVRecomm:
     def __init__(self,asset_value,shortSMVA,longSMVA,stocks,SMVAthr,Allowmethod):
@@ -448,7 +493,7 @@ firstdayrecomm.assetallocate()
 firstdayrecomm.shares        
         
         
-    
+
     
 
 
@@ -463,7 +508,7 @@ c=conn.cursor()
 assets=pd.read_sql_query('select * from assets;',conn)
 stocks_lists=pd.read_sql_query('select * from stocks;',conn)
 c.execute('drop table assets;')
-
+c.execute('drop table stocks;')
 
 d=pd.read_sql_query("select min(asset_value) as asset_value from assets where id>(select max(id) from assets where if_is_initial='YES');",conn)
 test_id=pd.read_sql_query("select * from stocks where asset_id=(select max(asset_id)-1 from stocks where asset_id>=(select max(id) from assets where if_is_initial='YES' )); ",conn)
@@ -477,46 +522,21 @@ stocks.get_stock_prices()
 stocks.get_stock_matrix()
 stocks_list=stocks.stock_list
 stocks_matrix=stocks.stock_mat
-stocks_list.tail(10)
-stocks_matrix.tail(10)
 
 
-header=stocks_matrix.columns
-return_matrix=pd.DataFrame(columns=header)
+current_portfolio=consecdtrading.my_df
+performance=performance(stocks,current_portfolio)
 
-matrixa=stocks_matrix[12000:14413]
-matrixb=stocks_matrix[12001:14414]
-matrixa=matrixa.reset_index(drop=True)
-matrixb=matrixb.reset_index(drop=True)
+performance.maximum_drawdown_number
+transactions=performance.transactions
+performance.get_return()
+absolute_return=performance.absolute_return
+performance.sortino_ratio
 
-return_matrix=np.log(matrixa/matrixb)*30
+ROI=performance.ROI
 
-long_smva=return_matrix.rolling(window=50).mean().tail(1)
-short_smva=return_matrix.rolling(window=10).mean().tail(1)
-excess_smva=short_smva-long_smva
-excess_smva=excess_smva.T
-excess_smva.columns=['rate_return']
-rank_excess_smva=excess_smva.sort_values(by='rate_return',ascending=False)
-excess_smva_Selected=rank_excess_smva.iloc[0:5]
-stock_share_weight=pd.DataFrame()
-asset_value=20000
-for i in range(5):
-    weighted_asset=asset_value*excess_smva_Selected.iloc[i]/sum(excess_smva_Selected['rate_return'])
-    weighted_asset=weighted_asset.to_frame()
-    weighted_asset=weighted_asset.T
-    stock_share_weight=stock_share_weight.append(weighted_asset)
-
-weighted_asset=weighted_asset.to_frame()
-weighted_asset_T=weighted_asset.T
-stock_share_weight=stock_share_weight.append(weighted_asset)
-sub=stocks_matrix.iloc[-1]
-rank_excess_index=rank_excess_smva.iloc[0:5].index
-print(rank_excess_index)
-price=sub.loc[rank_excess_index]
-price=price.to_frame()
-price.columns=['price']
-price['shares']=5000/price['price']
-price['shares2']=stock_share_weight['rate_return']/price['price']
+database=database(current_portfolio,transactions,absolute_return,ROI)
+database.main()
 
 starting = InitialPortfolio(100000, stocks)
 starting.get_initial_portfolio()
@@ -528,8 +548,8 @@ consecdtrading=ConsecDayTrading(stocks)
 consecdtrading.initial_last_holding()
 consecdtrading.get_current_av()
 consecdtrading.get_current_portfolio()
-consecdtrading.get_transactions()
-consecdtrading.get_return()
+
+
 
 consecdtrading.main()
 consecdtrading.get_performance_indicators()
